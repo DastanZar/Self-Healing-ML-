@@ -7,7 +7,10 @@ This API exposes the ML prediction pipeline as a REST endpoint.
 import logging
 import sys
 import os
+import random as _random
+import math as _math
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -49,6 +52,28 @@ class PredictionOutput(BaseModel):
     metrics: dict
     action: str | None
     root_cause_analysis: Optional[str] = None
+
+
+class SimulateOutput(BaseModel):
+    cpu: float
+    memory: float
+    latency: float
+    error_rate: float
+    network_in: float
+    network_out: float
+    disk: float
+    prediction: int
+    decision: str
+    anomaly_rate: float
+    drift_score: float
+    action: str
+    message: str
+    nodes: list
+    timestamp: str
+
+
+# Simulation tick counter (persists across requests in memory)
+_sim_state = {"tick": 0}
 
 
 # Global app state
@@ -167,6 +192,103 @@ async def predict(input_data: PredictionInput):
             status_code=500,
             detail=f"Prediction failed: {str(e)}"
         )
+
+
+@app.get("/simulate", response_model=SimulateOutput)
+async def simulate():
+    """
+    Generate one tick of simulated infra metrics and run the full ML pipeline.
+    Called by the frontend every 2 seconds to drive the live dashboard.
+    """
+    _sim_state["tick"] += 1
+    tick = _sim_state["tick"]
+
+    # Generate metrics with anomaly injection
+    is_anomaly = tick > 0 and tick % 20 == 0
+    is_spike   = tick > 0 and tick % 7  == 0
+
+    if is_anomaly:
+        cpu  = _random.uniform(75, 95)
+        mem  = _random.uniform(70, 90)
+        lat  = _random.uniform(250, 480)
+        err  = _random.uniform(0.08, 0.18)
+    elif is_spike:
+        cpu  = _random.uniform(55, 75)
+        mem  = _random.uniform(50, 70)
+        lat  = _random.uniform(160, 260)
+        err  = _random.uniform(0.02, 0.06)
+    else:
+        cpu  = _random.uniform(12, 55)
+        mem  = _random.uniform(20, 58)
+        lat  = _random.uniform(30, 140)
+        err  = _random.uniform(0.001, 0.018)
+
+    net_in  = round(_random.uniform(40, 180), 1)
+    net_out = round(_random.uniform(15, 80), 1)
+    disk    = round(min(35 + (tick * 0.05) % 30 + _random.uniform(-2, 2), 90), 1)
+
+    inp = {
+        "cpu": round(cpu, 2),
+        "memory": round(mem, 2),
+        "latency": round(lat, 2),
+        "error_rate": round(err, 4),
+    }
+
+    # Run real ML pipeline
+    try:
+        result = run_prediction_pipeline(inp)
+        prediction   = result["prediction"]
+        decision     = result["decision"]
+        metrics_out  = result.get("metrics", {})
+        action       = str(result.get("action", "None"))
+        anomaly_rate = metrics_out.get("anomaly_rate", 0.0)
+        drift_score  = metrics_out.get("drift_score", 0.0)
+    except Exception:
+        decision     = "ALERT" if (cpu > 75 or lat > 220) else "HEALTHY"
+        prediction   = 1 if decision == "ALERT" else 0
+        anomaly_rate = 0.0
+        drift_score  = 0.0
+        action       = "Fallback mode"
+
+    # Node health
+    nodes = [True, True, True, True]
+    if decision == "ALERT":
+        nodes[_random.randint(0, 3)] = False
+    elif decision in ("INVESTIGATE", "RETRAIN"):
+        nodes[2] = False
+        nodes[3] = False
+
+    # Message
+    msgs = {
+        "HEALTHY":    "HEALTHY — System operating normally",
+        "ALERT":      f"ALERT — Anomaly detected (confidence: {_random.randint(70,95)}%)",
+        "INVESTIGATE":"INVESTIGATE — Escalated to deep analysis",
+        "RETRAIN":    "RETRAIN — Model drift detected, retraining triggered",
+    }
+
+    return SimulateOutput(
+        cpu=round(cpu, 1),
+        memory=round(mem, 1),
+        latency=round(lat, 0),
+        error_rate=round(err, 4),
+        network_in=net_in,
+        network_out=net_out,
+        disk=disk,
+        prediction=prediction,
+        decision=decision,
+        anomaly_rate=round(anomaly_rate, 4),
+        drift_score=round(drift_score, 4),
+        action=action,
+        message=msgs.get(decision, "UNKNOWN"),
+        nodes=nodes,
+        timestamp=datetime.now().strftime("%H:%M:%S"),
+    )
+
+
+@app.post("/simulate/reset")
+async def reset_simulation():
+    _sim_state["tick"] = 0
+    return {"status": "reset"}
 
 
 if __name__ == "__main__":

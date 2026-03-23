@@ -1,717 +1,306 @@
 """
-AI Infra Control Plane - Streamlit Dashboard
-
-A visual control plane for the Self-Healing ML backend.
-Uses st.components.v1.html() for full CSS control including backdrop-filter.
+AegisML Ops Engine - Streamlit Dashboard
+Real ML inference pipeline wired to Apple-aesthetic HTML renderer.
 """
+
+import os, sys, json, random, logging
+from datetime import datetime
+from typing import Any, Dict
 
 import streamlit as st
 import streamlit.components.v1 as components
-import requests
-import pandas as pd
-from datetime import datetime
-from typing import Dict, Any, Optional
-import json
 
-# ==============================================================================
-# Configuration
-# ==============================================================================
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, PROJECT_ROOT)
+logging.basicConfig(level=logging.WARNING)
 
-API_BASE_URL = "http://127.0.0.1:8000"
-API_ENDPOINT = f"{API_BASE_URL}/predict"
-
-# Page configuration
-st.set_page_config(
-    page_title="AI Infra Control Plane",
-    page_icon="·",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# Minimal CSS to hide Streamlit chrome
-st.markdown("""
-<style>
-  header, footer, #MainMenu { display: none !important; }
-  .stApp { background: #080808 !important; }
-  .block-container { padding: 0 !important; max-width: 100% !important; }
-  section[data-testid="stSidebar"] { display: none !important; }
-</style>
-""", unsafe_allow_html=True)
-
-# ==============================================================================
-# API & State Management
-# ==============================================================================
+st.set_page_config(page_title="AegisML Ops Engine", page_icon="·", layout="wide")
+st.markdown("""<style>
+  header,footer,#MainMenu{display:none!important}
+  .stApp{background:#080808!important}
+  .block-container{padding:0!important;max-width:100%!important}
+  section[data-testid="stSidebar"]{display:none!important}
+  [data-testid="stToolbar"]{display:none!important}
+</style>""", unsafe_allow_html=True)
 
 def init_session_state():
-    """Initialize session state for history tracking."""
-    if "history" not in st.session_state:
-        st.session_state.history = []
-    if "last_response" not in st.session_state:
-        st.session_state.last_response = None
+    defaults = {"history":[],"model_ready":False,"tick":0}
+    for k,v in defaults.items():
+        if k not in st.session_state: st.session_state[k] = v
 
-
-def call_prediction_api(payload: Dict[str, float]) -> Optional[Dict[str, Any]]:
-    """Call the prediction API endpoint."""
+def ensure_model_loaded():
+    if st.session_state.model_ready: return True
     try:
-        response = requests.post(API_ENDPOINT, json=payload, timeout=10)
-        response.raise_for_status()
-        return response.json()
-    except Exception:
-        return None
+        from self_healing_system.services.inference_service.prediction_service import initialize_inference_system
+        initialize_inference_system()
+        st.session_state.model_ready = True
+        return True
+    except Exception as e:
+        logging.warning(f"Model load failed: {e}")
+        return False
 
-
-def add_to_history(payload: Dict[str, float], response: Dict[str, Any]):
-    """Add request/response to session history."""
-    entry = {
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "cpu": payload["cpu"],
-        "memory": payload["memory"],
-        "latency": payload["latency"],
-        "error_rate": payload["error_rate"],
-        "prediction": response.get("prediction"),
-        "decision": response.get("decision"),
-        "action": response.get("action"),
+def generate_input(tick):
+    is_anomaly = tick > 0 and tick % 20 == 0
+    is_spike   = tick > 0 and tick % 7  == 0
+    if is_anomaly:
+        cpu,mem,lat,err = random.uniform(75,95),random.uniform(70,90),random.uniform(250,480),random.uniform(0.08,0.18)
+    elif is_spike:
+        cpu,mem,lat,err = random.uniform(55,75),random.uniform(50,70),random.uniform(160,260),random.uniform(0.02,0.06)
+    else:
+        cpu,mem,lat,err = random.uniform(12,55),random.uniform(20,58),random.uniform(30,140),random.uniform(0.001,0.018)
+    return {
+        "cpu":round(cpu,2),"memory":round(mem,2),"latency":round(lat,2),"error_rate":round(err,4),
+        "network_in":round(random.uniform(40,180),1),"network_out":round(random.uniform(15,80),1),
+        "disk":round(min(35+(tick*0.05)%30+random.uniform(-2,2),90),1),
     }
-    if "metrics" in response:
-        entry["anomaly_rate"] = response["metrics"].get("anomaly_rate")
-        entry["drift_score"] = response["metrics"].get("drift_score")
-    
-    st.session_state.history.append(entry)
-    st.session_state.last_response = response
 
+def run_pipeline(inp):
+    try:
+        from self_healing_system.services.inference_service.prediction_service import run_prediction_pipeline
+        return run_prediction_pipeline({"cpu":inp["cpu"],"memory":inp["memory"],"latency":inp["latency"],"error_rate":inp["error_rate"]})
+    except Exception as e:
+        logging.warning(f"Pipeline fallback: {e}")
+        d = "ALERT" if (inp["cpu"]>75 or inp["latency"]>220) else "HEALTHY"
+        return {"prediction":1 if d=="ALERT" else 0,"metrics":{"anomaly_rate":0.0,"drift_score":0.0,"latency":inp["latency"]},"decision":d,"action":"Fallback mode"}
 
-# ==============================================================================
-# HTML Dashboard Builder
-# ==============================================================================
+def update_nodes(decision):
+    nodes = [True,True,True,True]
+    if decision=="ALERT": nodes[random.randint(0,3)]=False
+    elif decision in ("INVESTIGATE","RETRAIN"): nodes[2]=False; nodes[3]=False
+    return nodes
 
-def build_dashboard_html(data: dict) -> str:
-    """Build complete HTML dashboard with embedded CSS and JS."""
-    data_json = json.dumps(data)
-    
-    return f"""
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AegisML Ops Engine</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <style>
-    :root {{
-      --bg: #080808;
-      --surface: rgba(255,255,255,0.03);
-      --surface-hover: rgba(255,255,255,0.05);
-      --border: rgba(255,255,255,0.06);
-      --border-subtle: rgba(255,255,255,0.04);
-      --text-primary: #DEDEDE;
-      --text-secondary: #888888;
-      --text-muted: #555555;
-      --text-mono: #DEDEDE;
-      --success: #22C55E;
-      --danger: #EF4444;
-      --warning: #F59E0B;
-    }}
-    
-    * {{
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }}
-    
-    body {{
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-      -webkit-font-smoothing: antialiased;
-      background: var(--bg);
-      color: var(--text-primary);
-      min-height: 100vh;
-    }}
-    
-    .dashboard {{
-      display: flex;
-      flex-direction: column;
-      min-height: 100vh;
-    }}
-    
-    /* Header */
-    .header {{
-      position: sticky;
-      top: 0;
-      z-index: 100;
-      background: rgba(255,255,255,0.03);
-      backdrop-filter: blur(20px) saturate(180%);
-      -webkit-backdrop-filter: blur(20px) saturate(180%);
-      border-bottom: 1px solid var(--border);
-      padding: 16px 24px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }}
-    
-    .header-left {{
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }}
-    
-    .logo {{
-      width: 32px;
-      height: 32px;
-      background: rgba(255,255,255,0.08);
-      border-radius: 8px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }}
-    
-    .logo svg {{
-      width: 18px;
-      height: 18px;
-      stroke: var(--text-primary);
-    }}
-    
-    .header h1 {{
-      font-size: 16px;
-      font-weight: 600;
-      color: var(--text-primary);
-    }}
-    
-    .header p {{
-      font-size: 11px;
-      color: var(--text-muted);
-      letter-spacing: 0.02em;
-    }}
-    
-    .header-right {{
-      display: flex;
-      align-items: center;
-      gap: 16px;
-    }}
-    
-    .status-badge {{
-      padding: 4px 10px;
-      border-radius: 20px;
-      font-size: 11px;
-      font-weight: 500;
-      letter-spacing: 0.04em;
-      background: rgba(255,255,255,0.08);
-      color: var(--text-primary);
-    }}
-    
-    /* Main Content */
-    .content {{
-      flex: 1;
-      padding: 24px;
-      display: grid;
-      grid-template-columns: 1fr 320px;
-      gap: 24px;
-    }}
-    
-    .left-column {{
-      display: flex;
-      flex-direction: column;
-      gap: 24px;
-    }}
-    
-    /* Glass Card */
-    .glass-card {{
-      background: var(--surface);
-      backdrop-filter: blur(20px) saturate(180%);
-      -webkit-backdrop-filter: blur(20px) saturate(180%);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 24px;
-    }}
-    
-    .card-header {{
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 20px;
-    }}
-    
-    .card-header svg {{
-      width: 16px;
-      height: 16px;
-      stroke: var(--text-muted);
-    }}
-    
-    .card-header h3 {{
-      font-size: 13px;
-      font-weight: 500;
-      color: var(--text-primary);
-    }}
-    
-    /* Metrics Grid */
-    .metrics-grid {{
-      display: grid;
-      grid-template-columns: repeat(6, 1fr);
-      gap: 16px;
-    }}
-    
-    .metric-card {{
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }}
-    
-    .metric-label {{
-      font-size: 10px;
-      font-weight: 500;
-      color: var(--text-muted);
-      letter-spacing: 0.02em;
-      text-transform: uppercase;
-    }}
-    
-    .metric-value {{
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 22px;
-      font-weight: 500;
-      color: var(--text-primary);
-      letter-spacing: -0.03em;
-    }}
-    
-    .metric-unit {{
-      font-size: 11px;
-      color: var(--text-muted);
-      font-weight: 400;
-    }}
-    
-    /* Progress Bar */
-    .progress-track {{
-      height: 1px;
-      background: rgba(255,255,255,0.06);
-      margin-top: 4px;
-    }}
-    
-    .progress-fill {{
-      height: 1px;
-      background: var(--text-primary);
-      width: 0%;
-      transition: width 300ms ease;
-    }}
-    
-    /* Node Dots */
-    .nodes {{
-      display: flex;
-      justify-content: center;
-      gap: 32px;
-      padding: 24px 0;
-    }}
-    
-    .node {{
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 8px;
-    }}
-    
-    .node-dot {{
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: #2A2A2A;
-    }}
-    
-    .node-dot.active {{
-      background: #DEDEDE;
-      box-shadow: 0 0 0 2px rgba(222,222,222,0.15);
-    }}
-    
-    .node-label {{
-      font-size: 10px;
-      color: var(--text-muted);
-    }}
-    
-    /* Status Badge */
-    .status-tag {{
-      display: inline-block;
-      padding: 2px 8px;
-      border-radius: 4px;
-      font-size: 10px;
-      font-weight: 500;
-      letter-spacing: 0.08em;
-    }}
-    
-    .status-tag.healthy {{
-      background: rgba(34,197,94,0.12);
-      color: #22C55E;
-    }}
-    
-    .status-tag.alert {{
-      background: rgba(239,68,68,0.12);
-      color: #EF4444;
-    }}
-    
-    /* Ledger */
-    .ledger {{
-      display: flex;
-      flex-direction: column;
-      max-height: calc(100vh - 180px);
-      overflow-y: auto;
-    }}
-    
-    .ledger::-webkit-scrollbar {{
-      width: 3px;
-    }}
-    
-    .ledger::-webkit-scrollbar-track {{
-      background: transparent;
-    }}
-    
-    .ledger::-webkit-scrollbar-thumb {{
-      background: rgba(255,255,255,0.1);
-      border-radius: 3px;
-    }}
-    
-    .ledger-entry {{
-      padding: 12px 0;
-      border-bottom: 1px solid var(--border-subtle);
-    }}
-    
-    .ledger-entry:last-child {{
-      border-bottom: none;
-    }}
-    
-    .ledger-header {{
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 6px;
-    }}
-    
-    .ledger-time {{
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 10px;
-      color: #444444;
-    }}
-    
-    .ledger-message {{
-      font-size: 12px;
-      color: var(--text-secondary);
-      line-height: 1.5;
-    }}
-    
-    .ledger-details {{
-      margin-top: 8px;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 10px;
-      color: var(--text-muted);
-      display: flex;
-      gap: 12px;
-    }}
-    
-    .ledger-details span {{
-      opacity: 0.7;
-    }}
-    
-    /* Chart Container */
-    .chart-container {{
-      height: 280px;
-      position: relative;
-    }}
-  </style>
-</head>
-<body>
-  <div class="dashboard">
-    <header class="header">
-      <div class="header-left">
-        <div class="logo">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polygon points="12 2 2 7 12 12 22 7 12 2"/>
-            <polyline points="2 17 12 22 22 17"/>
-            <polyline points="2 12 12 17 22 12"/>
-          </svg>
-        </div>
-        <div>
-          <h1>AegisML Ops Engine</h1>
-          <p>Self-Healing Infrastructure Intelligence</p>
-        </div>
-      </div>
-      <div class="header-right">
-        <span class="status-badge">ONLINE</span>
-      </div>
-    </header>
-    
-    <main class="content">
-      <div class="left-column">
-        <!-- Nodes -->
-        <div class="glass-card" style="padding: 16px 24px;">
-          <div class="nodes">
-            <div class="node">
-              <div class="node-dot active"></div>
-              <span class="node-label">Node-1</span>
-            </div>
-            <div class="node">
-              <div class="node-dot active"></div>
-              <span class="node-label">Node-2</span>
-            </div>
-            <div class="node">
-              <div class="node-dot active"></div>
-              <span class="node-label">Node-3</span>
-            </div>
-            <div class="node">
-              <div class="node-dot"></div>
-              <span class="node-label">Node-4</span>
-            </div>
-          </div>
-        </div>
-        
-        <!-- Metrics -->
-        <div class="glass-card">
-          <div class="metrics-grid">
-            <div class="metric-card">
-              <span class="metric-label">CPU</span>
-              <span class="metric-value" id="cpu-value">{data['cpu']:.1f}<span class="metric-unit">%</span></span>
-              <div class="progress-track"><div class="progress-fill" id="cpu-bar" style="width: {data['cpu']}%"></div></div>
-            </div>
-            <div class="metric-card">
-              <span class="metric-label">Memory</span>
-              <span class="metric-value" id="mem-value">{data['memory']:.1f}<span class="metric-unit">%</span></span>
-              <div class="progress-track"><div class="progress-fill" id="mem-bar" style="width: {data['memory']}%"></div></div>
-            </div>
-            <div class="metric-card">
-              <span class="metric-label">Latency</span>
-              <span class="metric-value" id="lat-value">{data['latency']:.0f}<span class="metric-unit">ms</span></span>
-              <div class="progress-track"><div class="progress-fill" id="lat-bar" style="width: {min(data['latency']/5, 100)}%"></div></div>
-            </div>
-            <div class="metric-card">
-              <span class="metric-label">Network In</span>
-              <span class="metric-value">{data['network_in']:.1f}<span class="metric-unit">MB/s</span></span>
-              <div class="progress-track"><div class="progress-fill" style="width: {min(data['network_in']/2, 100)}%"></div></div>
-            </div>
-            <div class="metric-card">
-              <span class="metric-label">Disk</span>
-              <span class="metric-value">{data['disk']:.1f}<span class="metric-unit">%</span></span>
-              <div class="progress-track"><div class="progress-fill" style="width: {data['disk']}%"></div></div>
-            </div>
-            <div class="metric-card">
-              <span class="metric-label">Status</span>
-              <span class="status-tag healthy" id="status-tag">{data['status']}</span>
-            </div>
-          </div>
-        </div>
-        
-        <!-- Chart -->
-        <div class="glass-card">
-          <div class="card-header">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-            </svg>
-            <h3>System Telemetry</h3>
-          </div>
-          <div class="chart-container">
-            <canvas id="telemetryChart"></canvas>
-          </div>
-        </div>
-      </div>
-      
-      <!-- Right Column - Ledger -->
-      <div class="glass-card">
-        <div class="card-header">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="2" y="3" width="20" height="18" rx="2"/>
-            <line x1="8" y1="21" x2="16" y2="21"/>
-            <line x1="12" y1="17" x2="12" y2="21"/>
-          </svg>
-          <h3>System Ledger</h3>
-        </div>
-        <div class="ledger" id="ledger">
-          <!-- Ledger entries populated by JS -->
-        </div>
-      </div>
-    </main>
-  </div>
-  
-  <script>
-    const dashboardData = {data_json};
-    
-    // Populate metrics
-    document.getElementById('cpu-value').innerHTML = dashboardData.cpu.toFixed(1) + '<span class="metric-unit">%</span>';
-    document.getElementById('mem-value').innerHTML = dashboardData.memory.toFixed(1) + '<span class="metric-unit">%</span>';
-    document.getElementById('lat-value').innerHTML = dashboardData.latency.toFixed(0) + '<span class="metric-unit">ms</span>';
-    
-    // Update progress bars
-    document.getElementById('cpu-bar').style.width = dashboardData.cpu + '%';
-    document.getElementById('mem-bar').style.width = dashboardData.memory + '%';
-    document.getElementById('lat-bar').style.width = Math.min(dashboardData.latency / 5, 100) + '%';
-    
-    // Update status
-    const statusTag = document.getElementById('status-tag');
-    if (dashboardData.status === 'HEALTHY') {{
-      statusTag.className = 'status-tag healthy';
-      statusTag.textContent = 'HEALTHY';
-    }} else {{
-      statusTag.className = 'status-tag alert';
-      statusTag.textContent = dashboardData.status;
-    }}
-    
-    // Populate ledger
-    const ledger = document.getElementById('ledger');
-    const entries = dashboardData.ledger || [];
-    entries.forEach(entry => {{
-      const div = document.createElement('div');
-      div.className = 'ledger-entry';
-      div.innerHTML = `
-        <div class="ledger-header">
-          <span class="ledger-time">${{entry.timestamp}}</span>
-          <span class="status-tag ${{entry.decision === 'HEALTHY' ? 'healthy' : 'alert'}}">${{entry.decision}}</span>
-        </div>
-        <p class="ledger-message">${{entry.message}}</p>
-        <div class="ledger-details">
-          <span>CPU:${{entry.cpu}}%</span>
-          <span>MEM:${{entry.memory}}%</span>
-          <span>LAT:${{entry.latency}}ms</span>
-        </div>
-      `;
-      ledger.appendChild(div);
-    }});
-    
-    // Initialize Chart.js
-    const ctx = document.getElementById('telemetryChart').getContext('2d');
-    const chart = new Chart(ctx, {{
-      type: 'line',
-      data: {{
-        labels: dashboardData.chart_timestamps,
-        datasets: [
-          {{
-            label: 'CPU %',
-            data: dashboardData.chart_cpu,
-            borderColor: '#60A5FA',
-            backgroundColor: 'rgba(0,0,0,0)',
-            tension: 0.4,
-            borderWidth: 1.5,
-            pointRadius: 0,
-            pointHoverRadius: 4
-          }},
-          {{
-            label: 'Memory %',
-            data: dashboardData.chart_mem,
-            borderColor: '#A78BFA',
-            backgroundColor: 'rgba(0,0,0,0)',
-            tension: 0.4,
-            borderWidth: 1.5,
-            pointRadius: 0,
-            pointHoverRadius: 4
-          }},
-          {{
-            label: 'Latency (ms)',
-            data: dashboardData.chart_lat,
-            borderColor: '#FBBF24',
-            backgroundColor: 'rgba(0,0,0,0)',
-            tension: 0.4,
-            borderWidth: 1.5,
-            pointRadius: 0,
-            pointHoverRadius: 4
-          }}
-        ]
-      }},
-      options: {{
-        responsive: true,
-        maintainAspectRatio: false,
-        animation: {{ duration: 300 }},
-        interaction: {{ intersect: false, mode: 'index' }},
-        plugins: {{
-          legend: {{
-            position: 'bottom',
-            labels: {{ color: '#666666', font: {{ size: 11 }}, usePointStyle: true, padding: 20 }}
-          }}
-        }},
-        scales: {{
-          x: {{
-            grid: {{ color: 'rgba(255,255,255,0.04)' }},
-            ticks: {{ color: '#444444', font: {{ size: 10 }} }}
-          }},
-          y: {{
-            grid: {{ color: 'rgba(255,255,255,0.04)' }},
-            ticks: {{ color: '#444444', font: {{ size: 10 }} }}
-          }}
-        }}
-      }}
-    }});
-  </script>
-</body>
-</html>
+def ledger_message(decision, result):
+    msgs = {
+        "HEALTHY":"HEALTHY — System operating normally",
+        "ALERT":f"ALERT — Anomaly detected (confidence: {random.randint(70,95)}%)",
+        "INVESTIGATE":"INVESTIGATE — Escalated to deep analysis engine",
+        "RETRAIN":"RETRAIN — Model drift detected, retraining triggered",
+    }
+    return msgs.get(decision, f"UNKNOWN — {result.get('action','')}")
+
+CSS = """
+:root{--bg:#080808;--sf:rgba(255,255,255,0.03);--sfh:rgba(255,255,255,0.05);--bd:rgba(255,255,255,0.07);--bds:rgba(255,255,255,0.04);--tp:#DEDEDE;--ts:#888;--tm:#555;--ok:#22C55E;--er:#EF4444;--wa:#F59E0B;--nf:#60A5FA}
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+html,body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display',sans-serif;-webkit-font-smoothing:antialiased;background:var(--bg);color:var(--tp);height:100%;overflow:hidden}
+.dash{display:flex;flex-direction:column;height:100vh;overflow:hidden}
+.hdr{flex-shrink:0;background:rgba(8,8,8,.85);backdrop-filter:blur(20px) saturate(180%);-webkit-backdrop-filter:blur(20px) saturate(180%);border-bottom:1px solid var(--bd);height:54px;padding:0 24px;display:flex;align-items:center;justify-content:space-between}
+.hl{display:flex;align-items:center;gap:12px}
+.logo{width:26px;height:26px;background:rgba(255,255,255,.07);border-radius:7px;display:flex;align-items:center;justify-content:center}
+.logo svg{width:14px;height:14px;stroke:var(--tp)}
+.bn{font-size:14px;font-weight:600;color:var(--tp);letter-spacing:-.01em}
+.bs{font-size:10px;color:var(--tm);letter-spacing:.02em}
+.hr2{display:flex;align-items:center;gap:12px}
+.ob{display:flex;align-items:center;gap:5px;font-size:11px;font-weight:500;color:var(--ts);letter-spacing:.04em}
+.od{width:6px;height:6px;border-radius:50%;background:var(--ok);box-shadow:0 0 6px rgba(34,197,94,.5)}
+.sb{font-size:11px;color:var(--tm);padding:3px 10px;border:1px solid var(--bd);border-radius:20px}
+.content{flex:1;overflow:hidden;padding:18px;display:grid;grid-template-columns:1fr 292px;gap:16px}
+.lc{display:flex;flex-direction:column;gap:14px;overflow:hidden}
+.gc{background:var(--sf);backdrop-filter:blur(20px) saturate(180%);-webkit-backdrop-filter:blur(20px) saturate(180%);border:1px solid var(--bd);border-radius:12px;padding:18px 22px}
+.ch{display:flex;align-items:center;gap:8px;margin-bottom:16px}
+.ch svg{width:13px;height:13px;stroke:var(--tm);flex-shrink:0}
+.ch h3{font-size:11px;font-weight:500;color:var(--ts);letter-spacing:.06em;text-transform:uppercase}
+.ch .ec{margin-left:auto;font-size:11px;color:var(--tm);font-family:'JetBrains Mono',monospace}
+.nc{padding:12px 22px}
+.nodes{display:flex;justify-content:center;gap:40px}
+.nd{display:flex;flex-direction:column;align-items:center;gap:7px}
+.dot{width:8px;height:8px;border-radius:50%;background:#222;transition:background 300ms,box-shadow 300ms}
+.dot.on{background:#DEDEDE;box-shadow:0 0 0 2px rgba(222,222,222,.12)}
+.dot.er{background:var(--er);box-shadow:0 0 0 2px rgba(239,68,68,.2)}
+.nl{font-size:10px;color:var(--tm);letter-spacing:.04em}
+.mg{display:grid;grid-template-columns:repeat(6,1fr);gap:14px}
+.mc{display:flex;flex-direction:column;gap:5px}
+.ml{font-size:10px;font-weight:500;color:var(--tm);letter-spacing:.06em;text-transform:uppercase}
+.mv{font-family:'JetBrains Mono',monospace;font-size:21px;font-weight:500;color:var(--tp);letter-spacing:-.03em;line-height:1}
+.mv.av{color:var(--er)}
+.mu{font-size:11px;color:var(--tm);font-weight:400;font-family:'Inter',sans-serif}
+.pt{height:1px;background:rgba(255,255,255,.06);margin-top:2px}
+.pf{height:1px;background:var(--tp);width:0%;transition:width 400ms ease}
+.pf.af{background:var(--er)}
+.st{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:4px;font-size:10px;font-weight:500;letter-spacing:.08em;text-transform:uppercase}
+.st .d{width:4px;height:4px;border-radius:50%}
+.st.ok{background:rgba(34,197,94,.1);color:var(--ok)}.st.ok .d{background:var(--ok)}
+.st.er{background:rgba(239,68,68,.1);color:var(--er)}.st.er .d{background:var(--er)}
+.st.wa{background:rgba(245,158,11,.1);color:var(--wa)}.st.wa .d{background:var(--wa)}
+.st.nf{background:rgba(96,165,250,.1);color:var(--nf)}.st.nf .d{background:var(--nf)}
+.ss{display:flex;gap:20px;padding:8px 0 0}
+.si{display:flex;flex-direction:column;gap:3px}
+.sil{font-size:10px;color:var(--tm);letter-spacing:.04em;text-transform:uppercase}
+.siv{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--ts)}
+.cc{flex:1;min-height:0;display:flex;flex-direction:column}
+.cw{flex:1;min-height:0;position:relative}
+.ldc{display:flex;flex-direction:column;overflow:hidden}
+.ldg{flex:1;overflow-y:auto;scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.1) transparent}
+.ldg::-webkit-scrollbar{width:3px}.ldg::-webkit-scrollbar-track{background:transparent}.ldg::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:3px}
+.le{padding:11px 0;border-bottom:1px solid var(--bds)}.le:last-child{border-bottom:none}
+.lr{display:flex;justify-content:space-between;align-items:center;margin-bottom:5px}
+.lt{font-family:'JetBrains Mono',monospace;font-size:10px;color:#444}
+.lm{font-size:11px;color:var(--ts);line-height:1.45;margin-bottom:5px}
+.ld{display:flex;gap:10px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--tm)}
 """
 
-# ==============================================================================
-# Main Application
-# ==============================================================================
+HTML_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>{css}</style>
+</head>
+<body>
+<div class="dash">
+  <header class="hdr">
+    <div class="hl">
+      <div class="logo"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg></div>
+      <div><div class="bn">AegisML Ops Engine</div><div class="bs">Self-Healing Infrastructure Intelligence</div></div>
+    </div>
+    <div class="hr2">
+      <div class="ob"><div class="od"></div>ONLINE</div>
+      <div class="sb">Simulation Active</div>
+    </div>
+  </header>
+  <main class="content">
+    <div class="lc">
+      <div class="gc nc"><div class="nodes" id="nodes"></div></div>
+      <div class="gc">
+        <div class="mg">
+          <div class="mc"><span class="ml">CPU</span><span class="mv" id="cv">—<span class="mu">%</span></span><div class="pt"><div class="pf" id="cb"></div></div></div>
+          <div class="mc"><span class="ml">Memory</span><span class="mv" id="mv">—<span class="mu">%</span></span><div class="pt"><div class="pf" id="mb"></div></div></div>
+          <div class="mc"><span class="ml">Latency</span><span class="mv" id="lv">—<span class="mu">ms</span></span><div class="pt"><div class="pf" id="lb"></div></div></div>
+          <div class="mc"><span class="ml">Network In</span><span class="mv" id="nv">—<span class="mu">MB/s</span></span><div class="pt"><div class="pf" id="nb"></div></div></div>
+          <div class="mc"><span class="ml">Disk</span><span class="mv" id="dv">—<span class="mu">%</span></span><div class="pt"><div class="pf" id="db"></div></div></div>
+          <div class="mc"><span class="ml">Status</span><span class="st ok" id="sb2"><span class="d"></span>HEALTHY</span><div class="ss"><div class="si"><span class="sil">Anomaly</span><span class="siv" id="av">—</span></div><div class="si"><span class="sil">Drift</span><span class="siv" id="dr">—</span></div></div></div>
+        </div>
+      </div>
+      <div class="gc cc">
+        <div class="ch"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg><h3>System Telemetry</h3></div>
+        <div class="cw"><canvas id="ch"></canvas></div>
+      </div>
+    </div>
+    <div class="gc ldc">
+      <div class="ch"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><h3>System Ledger</h3><span class="ec" id="ec">0 events</span></div>
+      <div class="ldg" id="ldg"></div>
+    </div>
+  </main>
+</div>
+<script>
+const D={data};
+// Nodes
+const nr=document.getElementById('nodes');
+D.nodes.forEach((a,i)=>{const al=!a&&D.status!=='HEALTHY';nr.innerHTML+=`<div class="nd"><div class="dot ${a?'on':al?'er':''}"></div><span class="nl">Node-${i+1}</span></div>`;});
+// Metrics
+function sm(vi,bi,val,u,max,alert){
+  document.getElementById(vi).innerHTML=val+'<span class="mu">'+u+'</span>';
+  if(alert)document.getElementById(vi).classList.add('av');
+  const b=document.getElementById(bi);b.style.width=Math.min(val/max*100,100)+'%';
+  if(alert)b.classList.add('af');
+}
+sm('cv','cb',D.cpu.toFixed(1),'%',100,D.cpu>75);
+sm('mv','mb',D.memory.toFixed(1),'%',100,D.memory>75);
+sm('lv','lb',D.latency.toFixed(0),'ms',500,D.latency>200);
+sm('nv','nb',D.network_in.toFixed(1),'MB/s',200,false);
+sm('dv','db',D.disk.toFixed(1),'%',100,D.disk>80);
+// Status
+const sb=document.getElementById('sb2');
+const cm={HEALTHY:'ok',ALERT:'er',INVESTIGATE:'wa',RETRAIN:'nf'};
+sb.className='st '+(cm[D.status]||'ok');
+sb.innerHTML='<span class="d"></span>'+D.status;
+// Stats
+document.getElementById('av').textContent=D.anomaly_rate!==undefined?(D.anomaly_rate*100).toFixed(1)+'%':'—';
+document.getElementById('dr').textContent=D.drift_score!==undefined?D.drift_score.toFixed(3):'—';
+// Ledger
+const ldg=document.getElementById('ldg');
+const entries=D.ledger||[];
+document.getElementById('ec').textContent=entries.length+' events';
+entries.forEach(e=>{
+  const c=cm[e.decision]||'ok';
+  const d=document.createElement('div');d.className='le';
+  d.innerHTML=`<div class="lr"><span class="lt">${e.timestamp}</span><span class="st ${c}"><span class="d"></span>${e.decision}</span></div><p class="lm">${e.message}</p><div class="ld"><span>CPU:${e.cpu}%</span><span>MEM:${e.memory}%</span><span>LAT:${e.latency}ms</span></div>`;
+  ldg.appendChild(d);
+});
+// Chart
+const ctx=document.getElementById('ch').getContext('2d');
+new Chart(ctx,{
+  type:'line',
+  data:{labels:D.chart_timestamps,datasets:[
+    {label:'CPU %',data:D.chart_cpu,borderColor:'#60A5FA',backgroundColor:'transparent',tension:0.4,borderWidth:1.5,pointRadius:0,pointHoverRadius:4},
+    {label:'Memory %',data:D.chart_mem,borderColor:'#A78BFA',backgroundColor:'transparent',tension:0.4,borderWidth:1.5,pointRadius:0,pointHoverRadius:4},
+    {label:'Latency (ms)',data:D.chart_lat,borderColor:'#FBBF24',backgroundColor:'transparent',tension:0.4,borderWidth:1.5,pointRadius:0,pointHoverRadius:4}
+  ]},
+  options:{responsive:true,maintainAspectRatio:false,animation:{duration:300},
+    interaction:{intersect:false,mode:'index'},
+    plugins:{legend:{position:'bottom',labels:{color:'#666',font:{size:10},usePointStyle:true,padding:16}},
+      tooltip:{backgroundColor:'#0F0F0F',borderColor:'rgba(255,255,255,.08)',borderWidth:1,titleColor:'#888',bodyColor:'#DEDEDE',padding:10}},
+    scales:{x:{grid:{color:'rgba(255,255,255,.04)'},ticks:{color:'#444',font:{size:9},maxTicksLimit:8}},
+      y:{grid:{color:'rgba(255,255,255,.04)'},ticks:{color:'#444',font:{size:9}}}}}
+});
+</script>
+</body>
+</html>"""
+
+
+def build_dashboard_html(data):
+    return HTML_TEMPLATE.format(css=CSS, data=json.dumps(data))
+
 
 def main():
-    """Main application entry point."""
     init_session_state()
-    
-    # Default values for demo
-    cpu = 45.0
-    memory = 62.0
-    latency = 85.0
-    network_in = 125.5
-    network_out = 89.2
-    disk = 38.0
-    status = "HEALTHY"
-    
-    # Try to get data from API if available
-    if st.button("Run System Check", use_container_width=True):
-        payload = {"cpu": cpu, "memory": memory, "latency": latency, "error_rate": 0.01}
-        response = call_prediction_api(payload)
-        if response:
-            add_to_history(payload, response)
-            if response.get("decision"):
-                status = response.get("decision")
-    
-    # Build chart data from history
-    chart_timestamps = []
-    chart_cpu = []
-    chart_mem = []
-    chart_lat = []
-    
-    for entry in st.session_state.history[-20:]:
-        chart_timestamps.append(entry.get("timestamp", "")[-8:])
-        chart_cpu.append(entry.get("cpu", 0))
-        chart_mem.append(entry.get("memory", 0))
-        chart_lat.append(entry.get("latency", 0))
-    
-    # Pad chart data if needed
-    while len(chart_timestamps) < 10:
-        chart_timestamps.insert(0, "--:--:--")
-        chart_cpu.insert(0, 0)
-        chart_mem.insert(0, 0)
-        chart_lat.insert(0, 0)
-    
-    # Build ledger entries from history
-    ledger_entries = []
-    for entry in st.session_state.history[-20:]:
-        ledger_entries.append({
-            "timestamp": entry.get("timestamp", ""),
-            "message": f"Analysis complete - {entry.get('action', 'No action')}",
-            "decision": entry.get("decision", "UNKNOWN"),
-            "cpu": entry.get("cpu", 0),
-            "memory": entry.get("memory", 0),
-            "latency": entry.get("latency", 0)
-        })
-    
-    # Build dashboard data
-    dashboard_data = {
-        "cpu": cpu,
-        "memory": memory,
-        "latency": latency,
-        "network_in": network_in,
-        "network_out": network_out,
-        "disk": disk,
-        "status": status,
-        "ledger": ledger_entries,
-        "chart_timestamps": chart_timestamps,
-        "chart_cpu": chart_cpu,
-        "chart_mem": chart_mem,
-        "chart_lat": chart_lat
+    try:
+        from streamlit_autorefresh import st_autorefresh
+        st_autorefresh(interval=2000, key="autorefresh_counter")
+    except ImportError:
+        pass
+
+    ensure_model_loaded()
+    st.session_state.tick += 1
+    tick = st.session_state.tick
+
+    inp    = generate_input(tick)
+    result = run_pipeline(inp)
+    decision = result.get("decision","HEALTHY")
+    metrics  = result.get("metrics",{})
+    status   = decision
+
+    nodes = update_nodes(decision)
+
+    entry = {
+        "timestamp": datetime.now().strftime("%H:%M:%S"),
+        "message":   ledger_message(decision, result),
+        "decision":  status,
+        "cpu":       inp["cpu"],
+        "memory":    inp["memory"],
+        "latency":   inp["latency"],
     }
-    
-    # Render HTML dashboard
-    html_content = build_dashboard_html(dashboard_data)
-    components.html(html_content, height=900, scrolling=False)
+    st.session_state.history.append(entry)
+    st.session_state.history = st.session_state.history[-50:]
+
+    recent = st.session_state.history[-20:]
+    pad = 20 - len(recent)
+    chart_timestamps = [""]*pad + [e["timestamp"] for e in recent]
+    chart_cpu  = [0]*pad + [e["cpu"]     for e in recent]
+    chart_mem  = [0]*pad + [e["memory"]  for e in recent]
+    chart_lat  = [0]*pad + [e["latency"] for e in recent]
+
+    dashboard_data = {
+        "cpu":         inp["cpu"],
+        "memory":      inp["memory"],
+        "latency":     inp["latency"],
+        "network_in":  inp["network_in"],
+        "network_out": inp["network_out"],
+        "disk":        inp["disk"],
+        "status":      status,
+        "nodes":       nodes,
+        "anomaly_rate": metrics.get("anomaly_rate",0.0),
+        "drift_score":  metrics.get("drift_score",0.0),
+        "ledger":           list(reversed(st.session_state.history[-20:])),
+        "chart_timestamps": chart_timestamps,
+        "chart_cpu":        chart_cpu,
+        "chart_mem":        chart_mem,
+        "chart_lat":        chart_lat,
+    }
+
+    components.html(build_dashboard_html(dashboard_data), height=980, scrolling=False)
 
 
 if __name__ == "__main__":

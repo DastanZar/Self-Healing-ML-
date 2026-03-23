@@ -9,13 +9,13 @@ export interface MetricsData {
   networkIn: number;
   networkOut: number;
   diskUsage: number;
-  prediction?: {
-    anomaly: boolean;
-    confidence: number;
-    action?: string;
-  };
+  prediction?: number;
   decision?: string;
-  rootCauseAnalysis?: string;
+  anomaly_rate?: number;
+  drift_score?: number;
+  nodes?: boolean[];
+  message?: string;
+  action?: string;
 }
 
 export interface EventLogDetails {
@@ -38,80 +38,17 @@ export interface EventLog {
 }
 
 const MAX_DATA_POINTS = 30;
-const POLL_INTERVAL = 2000;
-const API_URL = 'http://127.0.0.1:8000/predict';
-
-// Generate random realistic metrics (mostly normal, occasional spikes)
-const generateRandomMetrics = (): MetricsData => {
-  const now = Date.now();
-  
-  // CPU: mostly normal (10-40), occasional spikes (40-100)
-  const cpuSpike = Math.random() < 0.15;
-  const cpu = cpuSpike 
-    ? Math.floor(Math.random() * 60) + 40 
-    : Math.floor(Math.random() * 30) + 10;
-  
-  // Memory: mostly normal (20-60), occasional spikes
-  const memSpike = Math.random() < 0.1;
-  const memory = memSpike 
-    ? Math.floor(Math.random() * 40) + 60 
-    : Math.floor(Math.random() * 40) + 20;
-  
-  // Latency: mostly normal (10-100ms), occasional high
-  const latencySpike = Math.random() < 0.1;
-  const latency = latencySpike 
-    ? Math.floor(Math.random() * 400) + 100 
-    : Math.floor(Math.random() * 90) + 10;
-  
-  // Error rate: mostly 0, occasional small values
-  const hasError = Math.random() < 0.08;
-  const errorRate = hasError ? Math.random() * 0.2 : 0;
-  
-  // Network I/O: 0-100 MB/s
-  const networkSpike = Math.random() < 0.1;
-  const networkIn = networkSpike 
-    ? Math.floor(Math.random() * 80) + 20 
-    : Math.floor(Math.random() * 40) + 5;
-  const networkOut = networkSpike 
-    ? Math.floor(Math.random() * 60) + 15 
-    : Math.floor(Math.random() * 30) + 3;
-  
-  // Disk usage: 30-70%
-  const diskUsage = Math.floor(Math.random() * 40) + 30;
-  
-  // Determine if anomaly based on metrics
-  const isAnomaly = cpu > 70 || latency > 200 || errorRate > 0.1;
-  const confidence = isAnomaly ? 0.7 + Math.random() * 0.3 : Math.random() * 0.3;
-  
-  return {
-    timestamp: now,
-    cpu,
-    memory,
-    latency,
-    errorRate: Math.round(errorRate * 1000) / 1000,
-    networkIn,
-    networkOut,
-    diskUsage,
-    prediction: {
-      anomaly: isAnomaly,
-      confidence: Math.round(confidence * 100) / 100,
-      action: isAnomaly ? (cpu > 85 ? 'scale_up' : latency > 300 ? 'optimize' : 'monitor') : undefined,
-    },
-  };
-};
+const API_URL = 'http://127.0.0.1:8000/simulate';
 
 const createEventLog = (metrics: MetricsData): EventLog => {
-  const { prediction, decision } = metrics;
+  const { decision, message } = metrics;
   
-  // Use decision from API if available, otherwise derive from prediction
-  const decisionStatus = decision || (prediction?.anomaly ? 'ALERT' : 'HEALTHY');
-  
-  if (prediction?.anomaly || decision === 'ALERT' || decision === 'RETRAIN') {
+  if (decision === 'ALERT' || decision === 'RETRAIN' || decision === 'INVESTIGATE') {
     return {
       id: `evt-${metrics.timestamp}`,
       timestamp: metrics.timestamp,
       type: 'anomaly',
-      message: `${decisionStatus} - ${prediction?.anomaly ? `Anomaly detected (confidence: ${(prediction.confidence * 100).toFixed(0)}%)` : 'System issue detected'}`,
+      message: message || `${decision} - Anomaly detected`,
       details: {
         cpu: metrics.cpu,
         memory: metrics.memory,
@@ -120,7 +57,7 @@ const createEventLog = (metrics: MetricsData): EventLog => {
         networkIn: metrics.networkIn,
         networkOut: metrics.networkOut,
         diskUsage: metrics.diskUsage,
-        decision: decisionStatus,
+        decision: decision || 'UNKNOWN',
       } as EventLogDetails,
     };
   }
@@ -129,7 +66,7 @@ const createEventLog = (metrics: MetricsData): EventLog => {
     id: `evt-${metrics.timestamp}`,
     timestamp: metrics.timestamp,
     type: 'prediction',
-    message: `HEALTHY - System operating normally`,
+    message: message || 'HEALTHY - System operating normally',
     details: {
       cpu: metrics.cpu,
       memory: metrics.memory,
@@ -138,7 +75,7 @@ const createEventLog = (metrics: MetricsData): EventLog => {
       networkIn: metrics.networkIn,
       networkOut: metrics.networkOut,
       diskUsage: metrics.diskUsage,
-      decision: 'HEALTHY',
+      decision: decision || 'HEALTHY',
     } as EventLogDetails,
   };
 };
@@ -155,36 +92,19 @@ export interface UseMetricsReturn {
 export function useMetrics(): UseMetricsReturn {
   const [metricsHistory, setMetricsHistory] = useState<MetricsData[]>([]);
   const [eventLog, setEventLog] = useState<EventLog[]>([]);
-  const [isSimulationActive, setIsSimulationActive] = useState(false);
+  const [isSimulationActive, setIsSimulationActive] = useState(true);
   const [isConnected, setIsConnected] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
   
   const intervalRef = useRef<number | null>(null);
-  const abortControllerRef = useRef<AbortController | null>(null);
 
-  const fetchRealData = useCallback(async () => {
+  const fetchSimulateData = useCallback(async () => {
     try {
-      abortControllerRef.current = new AbortController();
-      
-      // Get the latest metrics from history to send to API
-      const latestMetrics = metricsHistory[metricsHistory.length - 1];
-      const cpu = latestMetrics?.cpu ?? Math.random() * 100;
-      const memory = latestMetrics?.memory ?? Math.random() * 100;
-      const latency = latestMetrics?.latency ?? Math.random() * 500;
-      const error_rate = latestMetrics?.errorRate ?? 0;
-      
       const response = await fetch(API_URL, {
-        method: 'POST',
+        method: 'GET',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          cpu,
-          memory,
-          latency,
-          error_rate,
-        }),
-        signal: abortControllerRef.current.signal,
       });
       
       if (!response.ok) {
@@ -195,19 +115,23 @@ export function useMetrics(): UseMetricsReturn {
       setIsConnected(true);
       setLastError(null);
       
-      // Use the same metrics we sent, enriched with API response
+      // Map the API response to MetricsData
       const metrics: MetricsData = {
-        timestamp: Date.now(),
-        cpu,
-        memory,
-        latency,
-        errorRate: error_rate,
-        networkIn: latestMetrics?.networkIn ?? Math.random() * 50,
-        networkOut: latestMetrics?.networkOut ?? Math.random() * 30,
-        diskUsage: latestMetrics?.diskUsage ?? Math.floor(Math.random() * 40) + 30,
+        timestamp: data.timestamp || Date.now(),
+        cpu: data.cpu,
+        memory: data.memory,
+        latency: data.latency,
+        errorRate: data.error_rate,
+        networkIn: data.network_in,
+        networkOut: data.network_out,
+        diskUsage: data.disk,
         prediction: data.prediction,
         decision: data.decision,
-        rootCauseAnalysis: data.root_cause_analysis,
+        anomaly_rate: data.anomaly_rate,
+        drift_score: data.drift_score,
+        nodes: data.nodes,
+        message: data.message,
+        action: data.action,
       };
       
       setMetricsHistory(prev => {
@@ -218,32 +142,15 @@ export function useMetrics(): UseMetricsReturn {
       setEventLog(prev => {
         const newEvent = createEventLog(metrics);
         const updated = [newEvent, ...prev];
-        return updated.slice(0, 100); // Keep last 100 events
+        return updated.slice(0, 100);
       });
       
     } catch (error) {
-      if (error instanceof Error && error.name !== 'AbortError') {
+      if (error instanceof Error) {
         setIsConnected(false);
         setLastError(error.message);
       }
     }
-  }, [metricsHistory]);
-
-  const generateSimulatedData = useCallback(() => {
-    const metrics = generateRandomMetrics();
-    
-    setMetricsHistory(prev => {
-      const updated = [...prev, metrics];
-      return updated.slice(-MAX_DATA_POINTS);
-    });
-    
-    setEventLog(prev => {
-      const newEvent = createEventLog(metrics);
-      const updated = [newEvent, ...prev];
-      return updated.slice(0, 100);
-    });
-    
-    setIsConnected(true);
   }, []);
 
   const startPolling = useCallback(() => {
@@ -252,29 +159,18 @@ export function useMetrics(): UseMetricsReturn {
     }
     
     // Fetch immediately
-    if (isSimulationActive) {
-      generateSimulatedData();
-    } else {
-      fetchRealData();
-    }
+    fetchSimulateData();
     
-    // Then poll every 2 seconds
+    // Then poll every 2000ms
     intervalRef.current = window.setInterval(() => {
-      if (isSimulationActive) {
-        generateSimulatedData();
-      } else {
-        fetchRealData();
-      }
-    }, POLL_INTERVAL);
-  }, [isSimulationActive, fetchRealData, generateSimulatedData]);
+      fetchSimulateData();
+    }, 2000);
+  }, [fetchSimulateData]);
 
   const stopPolling = useCallback(() => {
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
-    }
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
     }
   }, []);
 
@@ -282,18 +178,18 @@ export function useMetrics(): UseMetricsReturn {
     setIsSimulationActive(prev => !prev);
   }, []);
 
-  // Handle simulation toggle changes
+  // Handle simulation toggle and start/stop polling based on isSimulationActive state
   useEffect(() => {
-    if (isSimulationActive || !isConnected) {
+    if (isSimulationActive) {
       startPolling();
     } else {
-      startPolling();
+      stopPolling();
     }
     
     return () => {
       stopPolling();
     };
-  }, [isSimulationActive]);
+  }, [isSimulationActive, startPolling, stopPolling]);
 
   return {
     metricsHistory,
