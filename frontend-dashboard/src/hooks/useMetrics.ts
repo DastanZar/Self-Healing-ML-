@@ -38,7 +38,8 @@ export interface EventLog {
 }
 
 const MAX_DATA_POINTS = 30;
-const API_URL = 'http://127.0.0.1:8000/simulate';
+const WS_URL = 'ws://127.0.0.1:8000/ws';
+const FALLBACK_URL = 'http://127.0.0.1:8000/simulate';
 
 const createEventLog = (metrics: MetricsData): EventLog => {
   const { decision, message } = metrics;
@@ -96,81 +97,148 @@ export function useMetrics(): UseMetricsReturn {
   const [isConnected, setIsConnected] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
   
-  const intervalRef = useRef<number | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const fallbackIntervalRef = useRef<number | null>(null);
 
-  const fetchSimulateData = useCallback(async () => {
+  const processData = useCallback((data: any) => {
+    // Map the API response to MetricsData
+    const metrics: MetricsData = {
+      timestamp: data.timestamp ? new Date().setHours(
+        parseInt(data.timestamp.split(':')[0]),
+        parseInt(data.timestamp.split(':')[1]),
+        parseInt(data.timestamp.split(':')[2])
+      ) : Date.now(),
+      cpu: data.cpu,
+      memory: data.memory,
+      latency: data.latency,
+      errorRate: data.error_rate,
+      networkIn: data.network_in,
+      networkOut: data.network_out,
+      diskUsage: data.disk,
+      prediction: data.prediction,
+      decision: data.decision,
+      anomaly_rate: data.anomaly_rate,
+      drift_score: data.drift_score,
+      nodes: data.nodes,
+      message: data.message,
+      action: data.action,
+    };
+    
+    setMetricsHistory(prev => {
+      const updated = [...prev, metrics];
+      return updated.slice(-MAX_DATA_POINTS);
+    });
+    
+    setEventLog(prev => {
+      const newEvent = createEventLog(metrics);
+      const updated = [newEvent, ...prev];
+      return updated.slice(0, 100);
+    });
+  }, []);
+
+  const connectWebSocket = useCallback(() => {
+    // Close existing connection if any
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+
+    // Clear any fallback polling
+    if (fallbackIntervalRef.current) {
+      clearInterval(fallbackIntervalRef.current);
+      fallbackIntervalRef.current = null;
+    }
+
     try {
-      const response = await fetch(API_URL, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
-      
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-      
-      const data = await response.json();
-      setIsConnected(true);
-      setLastError(null);
-      
-      // Map the API response to MetricsData
-      const metrics: MetricsData = {
-        timestamp: data.timestamp || Date.now(),
-        cpu: data.cpu,
-        memory: data.memory,
-        latency: data.latency,
-        errorRate: data.error_rate,
-        networkIn: data.network_in,
-        networkOut: data.network_out,
-        diskUsage: data.disk,
-        prediction: data.prediction,
-        decision: data.decision,
-        anomaly_rate: data.anomaly_rate,
-        drift_score: data.drift_score,
-        nodes: data.nodes,
-        message: data.message,
-        action: data.action,
+      const ws = new WebSocket(WS_URL);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        setIsConnected(true);
+        setLastError(null);
       };
-      
-      setMetricsHistory(prev => {
-        const updated = [...prev, metrics];
-        return updated.slice(-MAX_DATA_POINTS);
-      });
-      
-      setEventLog(prev => {
-        const newEvent = createEventLog(metrics);
-        const updated = [newEvent, ...prev];
-        return updated.slice(0, 100);
-      });
-      
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          processData(data);
+        } catch (e) {
+          console.error('Failed to parse WebSocket message:', e);
+        }
+      };
+
+      ws.onerror = () => {
+        setIsConnected(false);
+        setLastError('WebSocket connection error');
+        // Fallback to polling
+        startFallbackPolling();
+      };
+
+      ws.onclose = () => {
+        setIsConnected(false);
+        // Only fallback if simulation is still active
+        if (isSimulationActive) {
+          startFallbackPolling();
+        }
+      };
     } catch (error) {
       if (error instanceof Error) {
         setIsConnected(false);
         setLastError(error.message);
+        // Fallback to polling
+        startFallbackPolling();
       }
     }
-  }, []);
+  }, [processData, isSimulationActive]);
 
-  const startPolling = useCallback(() => {
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
+  const startFallbackPolling = useCallback(() => {
+    if (fallbackIntervalRef.current) {
+      return;
     }
-    
+
+    const fetchData = async () => {
+      try {
+        const response = await fetch(FALLBACK_URL, {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        });
+        
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        
+        const data = await response.json();
+        setIsConnected(true);
+        setLastError(null);
+        processData(data);
+      } catch (error) {
+        if (error instanceof Error) {
+          setIsConnected(false);
+          setLastError(error.message);
+        }
+      }
+    };
+
     // Fetch immediately
-    fetchSimulateData();
+    fetchData();
     
     // Then poll every 2000ms
-    intervalRef.current = window.setInterval(() => {
-      fetchSimulateData();
+    fallbackIntervalRef.current = window.setInterval(() => {
+      fetchData();
     }, 2000);
-  }, [fetchSimulateData]);
+  }, [processData]);
 
-  const stopPolling = useCallback(() => {
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
+  const disconnectWebSocket = useCallback(() => {
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    
+    if (fallbackIntervalRef.current) {
+      clearInterval(fallbackIntervalRef.current);
+      fallbackIntervalRef.current = null;
     }
   }, []);
 
@@ -178,18 +246,27 @@ export function useMetrics(): UseMetricsReturn {
     setIsSimulationActive(prev => !prev);
   }, []);
 
-  // Handle simulation toggle and start/stop polling based on isSimulationActive state
+  // Handle simulation toggle changes
   useEffect(() => {
     if (isSimulationActive) {
-      startPolling();
+      connectWebSocket();
     } else {
-      stopPolling();
+      disconnectWebSocket();
     }
     
     return () => {
-      stopPolling();
+      disconnectWebSocket();
     };
-  }, [isSimulationActive, startPolling, stopPolling]);
+  }, [isSimulationActive, connectWebSocket, disconnectWebSocket]);
+
+  // Start WebSocket on mount (simulation is ON by default)
+  useEffect(() => {
+    connectWebSocket();
+    
+    return () => {
+      disconnectWebSocket();
+    };
+  }, []);
 
   return {
     metricsHistory,

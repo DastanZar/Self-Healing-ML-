@@ -518,6 +518,136 @@ export function Dashboard() {
               </ResponsiveContainer>
             </div>
           </motion.div>
+
+          {/* HEALING EVENTS TIMELINE */}
+          <motion.div 
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="glass-card"
+            style={{ padding: '20px' }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+              <Activity size={18} color="var(--text-muted)" />
+              <span style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                Healing Events
+              </span>
+            </div>
+            
+            {/* Filter significant events */}
+            {(() => {
+              const significantEvents = eventLog.filter(e => 
+                e.details?.decision === 'RETRAIN' || 
+                e.details?.decision === 'INVESTIGATE' || 
+                e.details?.decision === 'ALERT'
+              ).slice(0, 10);
+              
+              if (significantEvents.length === 0) {
+                return (
+                  <div style={{ 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    justifyContent: 'center',
+                    height: '80px',
+                    color: 'var(--text-muted)',
+                    fontSize: '12px',
+                  }}>
+                    No healing events recorded yet
+                  </div>
+                );
+              }
+              
+              return (
+                <div style={{ 
+                  position: 'relative',
+                  height: '60px',
+                  display: 'flex',
+                  alignItems: 'center',
+                }}>
+                  {/* Timeline line */}
+                  <div style={{
+                    position: 'absolute',
+                    left: '20px',
+                    right: '20px',
+                    height: '2px',
+                    background: 'var(--border)',
+                    top: '50%',
+                    transform: 'translateY(-50%)',
+                  }} />
+                  
+                  {/* Events dots */}
+                  {significantEvents.map((event, idx) => {
+                    const decision = event.details?.decision || 'UNKNOWN';
+                    const dotColor = decision === 'RETRAIN' ? '#60A5FA' : 
+                                    decision === 'INVESTIGATE' ? '#F59E0B' : 
+                                    '#EF4444';
+                    const position = (idx / Math.max(significantEvents.length - 1, 1)) * 100;
+                    
+                    return (
+                      <div
+                        key={event.id}
+                        style={{
+                          position: 'absolute',
+                          left: `calc(20px + (100% - 40px) * ${idx / Math.max(significantEvents.length - 1, 1)})`,
+                          transform: 'translateX(-50%)',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          gap: '6px',
+                        }}
+                      >
+                        {/* Dot */}
+                        <div style={{
+                          width: '10px',
+                          height: '10px',
+                          borderRadius: '50%',
+                          backgroundColor: dotColor,
+                          boxShadow: `0 0 8px ${dotColor}60`,
+                          border: '2px solid var(--bg)',
+                        }} />
+                        {/* Label */}
+                        <div style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          gap: '2px',
+                        }}>
+                          <span className="mono" style={{ 
+                            fontSize: '9px', 
+                            color: '#444444' 
+                          }}>
+                            {formatTime(event.timestamp)}
+                          </span>
+                          <span style={{ 
+                            fontSize: '9px', 
+                            color: dotColor,
+                            fontWeight: 500,
+                          }}>
+                            {decision}
+                          </span>
+                          {decision === 'RETRAIN' && (
+                            <span style={{ 
+                              fontSize: '8px', 
+                              color: 'var(--text-muted)',
+                            }}>
+                              Model retrained
+                            </span>
+                          )}
+                          {decision === 'RETRAIN' && event.details && (
+                            <span style={{ 
+                              fontSize: '8px', 
+                              color: 'var(--text-secondary)',
+                            }}>
+                              ↓ {(event.details.cpu > 50 ? 'high' : 'low')}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+          </motion.div>
         </div>
 
         {/* RIGHT COLUMN - System Ledger */}
