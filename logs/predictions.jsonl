@@ -1,0 +1,4 @@
+{"timestamp": "2026-03-18T06:00:00", "input": {"cpu": 10.0, "memory": 50.0, "latency": 100.0, "error_rate": 0.01}, "prediction": 0}
+{"timestamp": "2026-03-18T06:00:01", "input": {"cpu": 10.0, "memory": 50.0, "latency": 100.0, "error_rate": 0.01}, "prediction": 0}
+{"timestamp": "2026-03-18T06:00:02", "input": {"cpu": 50.0, "memory": 50.0, "latency": 100.0, "error_rate": 0.01}, "prediction": 0}
+{"timestamp": "2026-03-18T06:00:03", "input": {"cpu": 50.0, "memory": 50.0, "latency": 100.0, "error_rate": 0.01}, "prediction": 0}
