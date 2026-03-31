@@ -127,7 +127,7 @@ export function Dashboard() {
                 margin: 0,
                 marginTop: '1px'
               }}>
-                Self-Healing Infrastructure Intelligence
+                AegisML Ops Engine
               </p>
             </div>
           </div>

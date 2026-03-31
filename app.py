@@ -195,11 +195,11 @@ async def predict(input_data: PredictionInput):
         )
 
 
-@app.get("/simulate", response_model=SimulateOutput)
+@app.get("/simulate")
 async def simulate():
     """
-    Generate one tick of simulated infra metrics and run the full ML pipeline.
-    Called by the frontend every 2 seconds to drive the live dashboard.
+    Simple simulation endpoint for frontend health check.
+    Returns minimal metrics to prevent frontend crashes.
     """
     _sim_state["tick"] += 1
     tick = _sim_state["tick"]
@@ -267,23 +267,17 @@ async def simulate():
         "RETRAIN":    "RETRAIN — Model drift detected, retraining triggered",
     }
 
-    return SimulateOutput(
-        cpu=round(cpu, 1),
-        memory=round(mem, 1),
-        latency=round(lat, 0),
-        error_rate=round(err, 4),
-        network_in=net_in,
-        network_out=net_out,
-        disk=disk,
-        prediction=prediction,
-        decision=decision,
-        anomaly_rate=round(anomaly_rate, 4),
-        drift_score=round(drift_score, 4),
-        action=action,
-        message=msgs.get(decision, "UNKNOWN"),
-        nodes=nodes,
-        timestamp=datetime.now().strftime("%H:%M:%S"),
-    )
+    # Return simple format to prevent frontend crashes
+    return {
+        "status": "online",
+        "cpu": round(cpu, 1),
+        "memory": round(mem, 1),
+        "latency": round(lat, 0),
+        "error_rate": round(err, 4),
+        "networkIn": net_in,
+        "networkOut": net_out,
+        "diskUsage": disk,
+    }
 
 
 @app.post("/simulate/reset")

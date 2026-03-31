@@ -39,7 +39,7 @@ export interface EventLog {
 
 const MAX_DATA_POINTS = 30;
 const WS_URL = 'ws://127.0.0.1:8000/ws';
-const FALLBACK_URL = 'http://127.0.0.1:8000/simulate';
+const FALLBACK_URL = 'http://127.0.0.1:8000/predict';
 
 const createEventLog = (metrics: MetricsData): EventLog => {
   const { decision, message } = metrics;
@@ -169,13 +169,14 @@ export function useMetrics(): UseMetricsReturn {
 
       ws.onerror = () => {
         setIsConnected(false);
-        setLastError('WebSocket connection error');
+        setLastError('AegisML Ops Engine - WebSocket connection error');
         // Fallback to polling
         startFallbackPolling();
       };
 
       ws.onclose = () => {
         setIsConnected(false);
+        console.log('AegisML Ops Engine - WebSocket disconnected, falling back to polling');
         // Only fallback if simulation is still active
         if (isSimulationActive) {
           startFallbackPolling();
@@ -191,6 +192,37 @@ export function useMetrics(): UseMetricsReturn {
     }
   }, [processData, isSimulationActive]);
 
+  // Generate random realistic metrics for fallback polling
+  const generateRandomMetrics = () => {
+    const isAnomaly = Math.random() < 0.15;
+    const isSpike = !isAnomaly && Math.random() < 0.2;
+    
+    let cpu, mem, lat, err;
+    if (isAnomaly) {
+      cpu = Math.random() * 20 + 75;
+      mem = Math.random() * 20 + 70;
+      lat = Math.random() * 230 + 250;
+      err = Math.random() * 0.1 + 0.08;
+    } else if (isSpike) {
+      cpu = Math.random() * 20 + 55;
+      mem = Math.random() * 20 + 50;
+      lat = Math.random() * 100 + 160;
+      err = Math.random() * 0.04 + 0.02;
+    } else {
+      cpu = Math.random() * 43 + 12;
+      mem = Math.random() * 38 + 20;
+      lat = Math.random() * 110 + 30;
+      err = Math.random() * 0.017 + 0.001;
+    }
+    
+    return {
+      cpu: parseFloat(cpu.toFixed(2)),
+      memory: parseFloat(mem.toFixed(2)),
+      latency: parseFloat(lat.toFixed(2)),
+      error_rate: parseFloat(err.toFixed(4)),
+    };
+  };
+
   const startFallbackPolling = useCallback(() => {
     if (fallbackIntervalRef.current) {
       return;
@@ -198,11 +230,15 @@ export function useMetrics(): UseMetricsReturn {
 
     const fetchData = async () => {
       try {
+        const requestData = generateRandomMetrics();
+        console.log('AegisML Ops Engine - Polling fallback with:', requestData);
+        
         const response = await fetch(FALLBACK_URL, {
-          method: 'GET',
+          method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
+          body: JSON.stringify(requestData),
         });
         
         if (!response.ok) {
@@ -212,11 +248,39 @@ export function useMetrics(): UseMetricsReturn {
         const data = await response.json();
         setIsConnected(true);
         setLastError(null);
-        processData(data);
+        console.log('AegisML Ops Engine - Fallback response:', data);
+        
+        // Map the prediction response to MetricsData format
+        const metrics: MetricsData = {
+          timestamp: Date.now(),
+          cpu: requestData.cpu,
+          memory: requestData.memory,
+          latency: requestData.latency,
+          errorRate: requestData.error_rate,
+          networkIn: Math.random() * 140 + 40,
+          networkOut: Math.random() * 65 + 15,
+          diskUsage: Math.random() * 30 + 35,
+          prediction: data.prediction,
+          decision: data.decision,
+          anomaly_rate: data.metrics?.anomaly_rate,
+          drift_score: data.metrics?.drift_score,
+          action: data.action,
+        };
+        
+        setMetricsHistory(prev => {
+          const updated = [...prev, metrics];
+          return updated.slice(-MAX_DATA_POINTS);
+        });
+        
+        setEventLog(prev => {
+          const newEvent = createEventLog(metrics);
+          const updated = [newEvent, ...prev];
+          return updated.slice(0, 100);
+        });
       } catch (error) {
         if (error instanceof Error) {
           setIsConnected(false);
-          setLastError(error.message);
+          setLastError('AegisML Ops Engine - ' + error.message);
         }
       }
     };
